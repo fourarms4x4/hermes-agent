@@ -84,12 +84,18 @@ def scale_frame(frame: bytes, sw: int, sh: int, dw: int, dh: int, xs, ys) -> byt
 
 
 def ensure_frames(asset_path: Path) -> None:
-    """Extract RGB24 frames from bike.mp4 via ffmpeg if bike.raw is missing."""
+    """Extract RGB24 frames from the seamless loop clip if bike.raw is missing.
+
+    Prefers bike-loop.mp4 (16s crossfade loop — no jump cut at the wrap);
+    falls back to bike.mp4.
+    """
     if asset_path.exists():
         return
     print("Extracting frames (one-time)...", file=sys.stderr)
     asset_path.parent.mkdir(parents=True, exist_ok=True)
-    src = asset_path.parent.parent / "bike.mp4"
+    src = asset_path.parent.parent / "bike-loop.mp4"
+    if not src.exists():
+        src = asset_path.parent.parent / "bike.mp4"
     if not src.exists():
         sys.exit(f"missing {src} — drop the clip at that path first")
     subprocess.run(
@@ -138,6 +144,7 @@ class Screensaver:
         self._dismissed = False
         self._on_screen = False
         self._last_rows = None
+        self._frame_pos = 0  # persists across pause/resume so playback continues
 
         # Frame data (loaded lazily)
         self._frames = []
@@ -170,15 +177,26 @@ class Screensaver:
     def set_busy(self, busy: bool):
         """Set agent busy state.
 
-        Called when thinking starts/stops.
+        Called when thinking starts/stops. ``busy=True`` (thinking started)
+        arms the screensaver; ``busy=False`` (thinking paused mid-turn, e.g.
+        before a tool call) only PAUSES — the thread stays alive and the
+        animation resumes in place on the next thinking pulse, so playback
+        is continuous for the whole turn. Full teardown happens at turn end
+        via ``stop()`` (called by the CLI when the agent run completes).
         """
         self._busy = busy
         if busy:
             # New busy period - allow screensaver to potentially activate again
             self._dismissed = False
         else:
-            # Agent turn complete - dismiss screensaver
-            self.stop()
+            # Mid-turn pause: _busy False makes should_activate() False, so
+            # the animation thread leaves the alt screen at its next frame
+            # boundary. Thread and frame position are preserved.
+            pass
+
+    def pause(self):
+        """Alias for the mid-turn pause (thinking stopped, tool output next)."""
+        self._busy = False
 
     def start(self):
         """Start screensaver monitoring."""
@@ -325,7 +343,7 @@ class Screensaver:
             self._write("\x1b[?1049h\x1b[?25l\x1b[2J\x1b[H")
 
             try:
-                frame_idx = 0
+                frame_idx = self._frame_pos % len(scaled)
                 next_t = time.monotonic() + frame_interval
                 while self._running and not self._dismissed:
                     if not self.should_activate():
@@ -354,6 +372,7 @@ class Screensaver:
                 self._write("\x1b[0m\x1b[?25h\x1b[?1049l")
                 self._on_screen = False
                 self._last_rows = None
+                self._frame_pos = frame_idx  # resume here after next pause
 
             if watch_keys:
                 break  # standalone: one activation cycle then exit

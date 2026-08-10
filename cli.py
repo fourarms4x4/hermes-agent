@@ -15657,6 +15657,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                         self.chat(user_input, images=submit_images or None)
                     finally:
                         self._agent_running = False
+                        # Turn finished — full screensaver teardown (the
+                        # animation thread exits and leaves the alt screen).
+                        if self._screensaver:
+                            self._screensaver.stop()
                         self._spinner_text = ""
                         self._tool_start_time = 0.0
                         self._pending_tool_info.clear()
