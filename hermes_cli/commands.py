@@ -171,6 +171,9 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("busy", "Control what Enter does while Hermes is working", "Configuration",
                cli_only=True, args_hint="[queue|steer|interrupt|status]",
                subcommands=("queue", "steer", "interrupt", "status")),
+    CommandDef("screensaver", "Enable/disable the idle Rick-on-a-bike screensaver", "Configuration",
+               cli_only=True, args_hint="[on|off|status]",
+               subcommands=("on", "off", "status")),
 
     # Tools & Skills
     CommandDef("tools", "Manage tools: /tools [list|disable|enable] [name...]", "Tools & Skills",

@@ -2664,6 +2664,64 @@ class CLICommandsMixin:
         else:
             _cprint(f"  {_ACCENT}✓ Busy input mode set to '{arg}' (session only){_RST}")
 
+    def _handle_screensaver_command(self, cmd: str):
+        """Handle /screensaver [on|off|status] — toggle the idle screensaver.
+
+        Persists to ``display.screensaver.enabled`` in config.yaml (survives
+        restart) and toggles the live instance immediately. If the instance
+        wasn't built at boot (feature was disabled then), enabling re-inits it.
+        """
+        from cli import _ACCENT, _DIM, _RST, _cprint, save_config_value
+        parts = cmd.strip().split(maxsplit=1)
+        arg = parts[1].strip().lower() if len(parts) > 1 else "status"
+
+        if arg == "status":
+            ss = getattr(self, "_screensaver", None)
+            if ss is not None:
+                state = "enabled" if ss.enabled else "disabled (instance alive but off)"
+                _cprint(f"  {_ACCENT}Screensaver: {state}{_RST}")
+                _cprint(f"  {_DIM}idle_seconds: {ss.idle_seconds} · on screen now: {'yes' if ss.is_active() else 'no'}{_RST}")
+            else:
+                _cprint(f"  {_ACCENT}Screensaver: disabled{_RST}")
+                _cprint(f"  {_DIM}(no live instance — enable with /screensaver on){_RST}")
+            _cprint(f"  {_DIM}Usage: /screensaver [on|off|status]{_RST}")
+            return
+
+        if arg == "on":
+            new_enabled = True
+        elif arg == "off":
+            new_enabled = False
+        else:
+            _cprint(f"  {_DIM}(._.) Unknown argument: {arg}{_RST}")
+            _cprint(f"  {_DIM}Usage: /screensaver [on|off|status]{_RST}")
+            return
+
+        # Toggle the live instance first (works even mid-render: stop() lets
+        # the animation thread exit at the next row boundary and leave the
+        # alt-screen buffer, so nothing is left on screen).
+        ss = getattr(self, "_screensaver", None)
+        if ss is not None:
+            if new_enabled:
+                ss.enabled = True
+                ss._dismissed = False  # re-arm for the next busy period
+            else:
+                ss.enabled = False
+                ss.stop()
+
+        if save_config_value("display.screensaver.enabled", new_enabled):
+            _cprint(f"  {_ACCENT}✓ Screensaver {'enabled' if new_enabled else 'disabled'} (saved to config){_RST}")
+        else:
+            _cprint(f"  {_ACCENT}✓ Screensaver {'enabled' if new_enabled else 'disabled'} (session only){_RST}")
+
+        if new_enabled and ss is None:
+            # Was disabled at boot, so no instance exists — build one now.
+            try:
+                self._init_screensaver()
+            except Exception:
+                pass
+            if getattr(self, "_screensaver", None) is not None:
+                _cprint(f"  {_DIM}Armed — triggers after {self._screensaver.idle_seconds}s idle while busy.{_RST}")
+
     def _handle_fast_command(self, cmd: str):
         """Handle /fast — toggle fast mode (OpenAI Priority Processing / Anthropic Fast Mode).
 

@@ -4292,6 +4292,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         self._secret_state = None
         self._secret_deadline = 0
         self._spinner_text: str = ""  # thinking spinner text for TUI
+        # Idle screensaver - Rick-on-a-bike animation
+        self._screensaver = None
+        self._init_screensaver()
         self._tool_start_time: float = 0.0  # monotonic timestamp when current tool started (for live elapsed)
         self._pending_tool_info: dict = {}  # function_name -> list of (preview, args) for stacked scrollback
         self._last_scrollback_tool: str = ""  # last tool name printed to scrollback (for "new" dedup)
@@ -5683,6 +5686,21 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
         return changed
 
+    def _init_screensaver(self) -> None:
+        """Initialize idle screensaver if configured."""
+        try:
+            from agent.screensaver import Screensaver
+            from hermes_cli.config import load_config
+            config = load_config()
+            display = config.get("display", {})
+            screensaver_config = display.get("screensaver", {})
+            
+            if screensaver_config.get("enabled", True):
+                self._screensaver = Screensaver(screensaver_config)
+        except Exception:
+            # Screensaver is optional - fail silently
+            self._screensaver = None
+
     def _on_thinking(self, text: str) -> None:
         """Called by agent when thinking starts/stops. Updates TUI spinner."""
         if not text:
@@ -5690,6 +5708,16 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         self._spinner_text = text or ""
         self._tool_start_time = 0.0  # clear tool timer when switching to thinking
         self._invalidate()
+        
+        # Screensaver integration
+        if self._screensaver:
+            if text:
+                # Thinking started - mark agent as busy
+                self._screensaver.set_busy(True)
+                self._screensaver.start()
+            else:
+                # Thinking stopped - mark agent as idle
+                self._screensaver.set_busy(False)
 
     def _on_notice(self, notice) -> None:
         """Queue an out-of-band AgentNotice for rendering at the next clean boundary.
@@ -9491,6 +9519,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             self._handle_voice_command(cmd_original)
         elif canonical == "busy":
             self._handle_busy_command(cmd_original)
+        elif canonical == "screensaver":
+            self._handle_screensaver_command(cmd_original)
         else:
             # Check for user-defined quick commands (bypass agent loop, no LLM call)
             base_cmd = cmd_lower.split()[0]
@@ -13656,6 +13686,24 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             """
             return None
 
+        @kb.add(_IgnoreKeys.Any, eager=True, filter=Condition(
+            lambda: bool(
+                getattr(self, "_screensaver", None)
+                and self._screensaver.is_active()
+            )
+        ))
+        def handle_screensaver_dismiss(event):
+            """Any key dismisses the idle screensaver (Windows-screensaver style).
+
+            Engages only while the animation is on screen; the keypress is
+            swallowed so it doesn't land in the input buffer. The animation
+            thread sees _dismissed and leaves the alt-screen buffer.
+            """
+            ss = getattr(self, "_screensaver", None)
+            if ss is not None:
+                ss.record_keypress()
+            return None
+
         def handle_enter(event):
             """Handle Enter key - submit input.
             
@@ -13873,6 +13921,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                         pass
                 else:
                     self._pending_input.put(payload)
+                
+                # Reset screensaver idle timer on user input submission
+                if self._screensaver:
+                    self._screensaver.reset_idle()
+                
                 # History stores real pasted content, not the placeholder, so
                 # up-arrow recall restores the actual text.
                 self._inline_pastes(event.app.current_buffer)
