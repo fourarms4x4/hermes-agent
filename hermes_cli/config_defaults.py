@@ -1347,16 +1347,6 @@ DEFAULT_CONFIG = {
             # independently of scale.
             "unicode_cols": 0,
         },
-        # Idle screensaver configuration (Rick-on-a-bike animation).
-        # Activates when agent is busy AND no keyboard input for idle_seconds.
-        # Dismisses instantly on any keypress or when agent turn completes.
-        "screensaver": {
-            "enabled": True,
-            # Seconds of idle (no keyboard) before screensaver activates.
-            "idle_seconds": 10,
-            # Path to pre-rendered RGB24 frame file (concatenated frames).
-            "asset_path": "~/.hermes/screensaver/bike/bike.raw",
-        },
     },
 
     # Web dashboard settings
