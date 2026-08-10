@@ -16,6 +16,9 @@ Songwriting craft and Suno AI music prompts.
 |---|---|
 | Source | Bundled (installed by default) |
 | Path | `skills/creative/songwriting-and-ai-music` |
+| Version | `1.0.0` |
+| Author | Teknium (teknium1), Hermes Agent |
+| License | MIT |
 | Platforms | linux, macos, windows |
 
 ## Reference: full SKILL.md
@@ -309,7 +312,7 @@ cover this (heavy dependencies, so not installed by default):
   `hermes skills install official/creative/heartmula`
 - **audiocraft** — Meta's MusicGen (instrumental text-to-music) and
   AudioGen (sound effects):
-  `hermes skills install official/creative/audiocraft`
+  `hermes skills install official/creative/audiocraft-audio-generation`
 
 The lyric-writing and prompting craft in this skill applies to
 heartmula too — its input format is lyrics with bracketed structure
