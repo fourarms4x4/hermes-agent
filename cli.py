@@ -9873,6 +9873,28 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         except Exception:
             return False
 
+    def _should_handle_queued_command_inline(self, text: str, has_images: bool = False) -> bool:
+        """Return True when /queued should be dispatched while the agent runs.
+
+        The whole point of /queued is checking _pending_input mid-run, but a
+        slash command typed while busy goes into _pending_input and
+        process_loop is blocked inside self.chat() for the duration of the
+        run — the viewer would only fire after the turn ends, when the queue
+        state it reports is stale. Dispatch inline on the UI thread (same
+        treatment as /steer and /background).
+        """
+        if not text or has_images or not _looks_like_slash_command(text):
+            return False
+        if not getattr(self, "_agent_running", False):
+            return False
+        try:
+            from hermes_cli.commands import resolve_command
+            base = text.split(None, 1)[0].lower().lstrip('/')
+            cmd = resolve_command(base)
+            return bool(cmd and cmd.name == "queued")
+        except Exception:
+            return False
+
     def _output_console(self):
         """Use prompt_toolkit-safe Rich rendering once the TUI is live."""
         if getattr(self, "_app", None):
@@ -10456,6 +10478,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     _cprint(f"  Queued for the next turn: {payload[:80]}{'...' if len(payload) > 80 else ''}")
                 else:
                     _cprint(f"  Queued: {payload[:80]}{'...' if len(payload) > 80 else ''}")
+        elif canonical == "queued":
+            self._handle_queued_command(cmd_original)
         elif canonical == "steer":
             # Inject a message after the next tool call without interrupting.
             # If the agent is actively running, push the text into the agent's
@@ -15626,6 +15650,19 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     # process_command() prints through patch_stdout and never
                     # invalidates the app, so the submitted text can linger in
                     # the input area looking unsent.
+                    event.app.invalidate()
+                    return
+
+                # /queued gets the same inline treatment: checking the queue
+                # mid-run is the primary use case, but a slash command typed
+                # while busy lands in _pending_input and only runs after
+                # process_loop drains (blocked inside self.chat()) — by then
+                # the queue snapshot it reports is stale.
+                if self._should_handle_queued_command_inline(
+                    text, has_images=has_images
+                ):
+                    self.process_command(text)
+                    event.app.current_buffer.reset(append_to_history=True)
                     event.app.invalidate()
                     return
 

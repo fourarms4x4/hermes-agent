@@ -3350,6 +3350,65 @@ class CLICommandsMixin:
         else:
             _cprint(f"  {_ACCENT}✓ Busy input mode set to '{arg}' (session only){_RST}")
 
+    def _handle_queued_command(self, cmd: str):
+        """Handle /queued — list or clear prompts queued for the next turn.
+
+        Usage:
+            /queued         Show queued prompts (next-first)
+            /queued clear   Drop everything queued for the next turn
+
+        Reads the internal deque of ``self._pending_input`` (a queue.Queue)
+        without consuming it. The unguarded peek mirrors the existing
+        precedent in cli.py (_maybe_continue_goal_after_turn): deque
+        mutation mid-iteration can raise RuntimeError, so fall back to a
+        friendly message on exception. ``clear`` drains with get_nowait(),
+        which is mutex-locked per call — safe without extra locking.
+        """
+        import queue as _queue
+
+        from cli import _ACCENT, _DIM, _RST, _cprint
+
+        parts = cmd.strip().split(maxsplit=1)
+        arg = parts[1].strip().lower() if len(parts) > 1 else ""
+
+        if arg == "clear":
+            n = 0
+            while True:
+                try:
+                    self._pending_input.get_nowait()
+                except _queue.Empty:
+                    break
+                n += 1
+            _cprint(f"  {_ACCENT}✓ Cleared {n} queued prompt{'s' if n != 1 else ''}{_RST}")
+            return
+
+        if arg:
+            _cprint(f"  {_DIM}(._.) Unknown argument: {arg}{_RST}")
+            _cprint(f"  {_DIM}Usage: /queued [clear]{_RST}")
+            return
+
+        try:
+            pending = list(self._pending_input.queue)
+        except Exception:
+            _cprint(f"  {_DIM}Queue is busy — try again in a moment.{_RST}")
+            return
+
+        if not pending:
+            _cprint(f"  {_DIM}Nothing queued for the next turn.{_RST}")
+            _cprint(f"  {_DIM}Use /queue <prompt> to enqueue one.{_RST}")
+            return
+
+        _cprint(f"  {_ACCENT}{len(pending)} queued prompt{'s' if len(pending) != 1 else ''} (next first):{_RST}")
+        for i, entry in enumerate(pending, 1):
+            text = entry
+            # Bundled text+image payloads are (text, images) tuples.
+            if isinstance(text, tuple) and text:
+                text = text[0]
+            rendered = str(text)
+            preview = rendered[:80] + ("..." if len(rendered) > 80 else "")
+            _cprint(f"  {_DIM}{i:>2}.{_RST} {preview}")
+        _cprint(f"  {_DIM}Usage: /queued [clear]{_RST}")
+
     def _handle_screensaver_command(self, cmd: str):
         """Handle /screensaver [on|off|status] — toggle the idle screensaver.
 
