@@ -174,6 +174,18 @@ class Screensaver:
         """Reset idle timer without dismissing (used when user submits input)."""
         self._last_keypress = time.monotonic()
 
+    def wait_off_screen(self, timeout: float = 0.5) -> None:
+        """Block until the animation has left the alternate screen buffer.
+
+        Called by the CLI on thinking-stop BEFORE the TUI redraws. Without
+        this, the response render races the async alt-screen teardown and
+        the terminal glitches (visible as "exits to the regular terminal,
+        then rerenders" — theme item 12.1).
+        """
+        deadline = time.monotonic() + timeout
+        while self._on_screen and time.monotonic() < deadline:
+            time.sleep(0.01)
+
     def set_busy(self, busy: bool):
         """Set agent busy state.
 

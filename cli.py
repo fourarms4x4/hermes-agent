@@ -6510,21 +6510,27 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
     def _on_thinking(self, text: str) -> None:
         """Called by agent when thinking starts/stops. Updates TUI spinner."""
-        if not text:
-            self._flush_reasoning_preview(force=True)
-        self._spinner_text = text or ""
-        self._tool_start_time = 0.0  # clear tool timer when switching to thinking
-        self._invalidate()
-        
-        # Screensaver integration
+        # Screensaver first: on thinking-stop we must leave the alt screen and
+        # wait for it BEFORE the TUI redraws. Previously _invalidate() ran
+        # first, so the response render raced the async alt-screen teardown —
+        # the terminal flashed back to the regular screen then re-rendered
+        # (theme item 12.1).
         if self._screensaver:
             if text:
                 # Thinking started - mark agent as busy
                 self._screensaver.set_busy(True)
                 self._screensaver.start()
             else:
-                # Thinking stopped - mark agent as idle
+                # Thinking stopped - pause and wait until the animation has
+                # actually left the alt screen, then redraw cleanly.
                 self._screensaver.set_busy(False)
+                self._screensaver.wait_off_screen()
+
+        if not text:
+            self._flush_reasoning_preview(force=True)
+        self._spinner_text = text or ""
+        self._tool_start_time = 0.0  # clear tool timer when switching to thinking
+        self._invalidate()
 
     def _on_notice(self, notice) -> None:
         """Queue an out-of-band AgentNotice for rendering at the next clean boundary.
