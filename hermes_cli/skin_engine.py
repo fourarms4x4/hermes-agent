@@ -1016,6 +1016,12 @@ def get_prompt_toolkit_style_overrides() -> Dict[str, str]:
     status_warn = skin.get_color("status_bar_warn", warn)
     status_bad = skin.get_color("status_bar_bad", skin.get_color("banner_accent", warn))
     status_critical = skin.get_color("status_bar_critical", error)
+    # Session-title badge (pinned right edge of the status bar). Base TUI
+    # hardcodes gold-on-navy; skins override via status_bar_session_bg/fg.
+    # Fallback: banner_title on the skin's background — keeps the badge
+    # on-palette for any skin without making new keys mandatory.
+    session_badge_bg = skin.get_color("status_bar_session_bg", title)
+    session_badge_fg = skin.get_color("status_bar_session_fg", skin.get_color("background", "#0e0e12"))
     voice_bg = skin.get_color("voice_status_bg", status_bg)
     menu_bg = skin.get_color("completion_menu_bg", "#1a1a2e")
     menu_current_bg = skin.get_color("completion_menu_current_bg", "#333355")
@@ -1039,6 +1045,7 @@ def get_prompt_toolkit_style_overrides() -> Dict[str, str]:
         "status-bar-warn": f"bg:{status_bg} {status_warn} bold",
         "status-bar-bad": f"bg:{status_bg} {status_bad} bold",
         "status-bar-critical": f"bg:{status_bg} {status_critical} bold",
+        "status-bar-session-title": f"bg:{session_badge_bg} {session_badge_fg} bold",
         "input-rule": input_rule,
         "image-badge": f"{label} bold",
         "completion-menu": f"bg:{menu_bg} {text}",
