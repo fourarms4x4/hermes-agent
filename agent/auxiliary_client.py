@@ -1073,6 +1073,37 @@ def build_nvidia_nim_headers(base_url: str | None) -> dict:
     return {}
 
 
+# OpenCode Zen/Go session affinity. Added 2026-09-08: the Go relay
+# (opencode.ai/zen/go/v1) began rejecting every request that arrives without
+# an `x-opencode-session` header — HTTP 400, `MissingSessionID`, "Request is
+# missing x-opencode-session and cannot be routed efficiently". Their docs
+# still describe the header as a recommendation; the API enforces it. The
+# value is meant to be STABLE for the length of one conversation so the relay
+# can keep prompt-cache affinity, so we send the Hermes session id when there
+# is one and a per-process id otherwise (better a stable wrong-grained id than
+# a fresh one per request, which defeats caching).
+_OPENCODE_SESSION_FALLBACK = f"hermes-{uuid.uuid4().hex[:24]}"
+
+
+def build_opencode_session_headers(
+    base_url: str | None,
+    session_id: str | None = None,
+) -> dict:
+    """Return the `x-opencode-session` header for opencode.ai traffic."""
+    if not base_url_host_matches(str(base_url or ""), "opencode.ai"):
+        return {}
+    sid = str(session_id or "").strip()
+    if not sid:
+        try:
+            sid = str(_runtime_main_value("session_id") or "").strip()
+        except Exception:
+            sid = ""
+    # Header values must be latin-1 safe for httpx; session ids are uuids or
+    # slugs in practice, but a filename-ish id can carry anything.
+    sid = re.sub(r"[^A-Za-z0-9_.-]", "", sid)[:64]
+    return {"x-opencode-session": f"hermes-{sid}" if sid else _OPENCODE_SESSION_FALLBACK}
+
+
 # Vercel AI Gateway app attribution headers. HTTP-Referer maps to
 # referrerUrl and X-Title maps to appName in the gateway's analytics.
 from hermes_cli import __version__ as _HERMES_VERSION
@@ -2537,6 +2568,8 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
                 extra["default_headers"] = copilot_default_headers()
             elif base_url_host_matches(base_url, "integrate.api.nvidia.com"):
                 extra["default_headers"] = build_nvidia_nim_headers(base_url)
+            elif base_url_host_matches(base_url, "opencode.ai"):
+                extra["default_headers"] = build_opencode_session_headers(base_url)
             else:
                 try:
                     from providers import get_provider_profile as _gpf_aux
@@ -2577,6 +2610,8 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
             extra["default_headers"] = copilot_default_headers()
         elif base_url_host_matches(base_url, "integrate.api.nvidia.com"):
             extra["default_headers"] = build_nvidia_nim_headers(base_url)
+        elif base_url_host_matches(base_url, "opencode.ai"):
+            extra["default_headers"] = build_opencode_session_headers(base_url)
         else:
             try:
                 from providers import get_provider_profile as _gpf_aux2
@@ -5843,6 +5878,8 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
         async_kwargs["default_headers"] = {"User-Agent": "claude-code/0.1.0"}
     elif base_url_host_matches(sync_base_url, "integrate.api.nvidia.com"):
         async_kwargs["default_headers"] = build_nvidia_nim_headers(sync_base_url)
+    elif base_url_host_matches(sync_base_url, "opencode.ai"):
+        async_kwargs["default_headers"] = build_opencode_session_headers(sync_base_url)
     elif base_url_host_matches(sync_base_url, "x.ai"):
         from tools.xai_http import hermes_xai_default_headers
 
