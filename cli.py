@@ -2901,6 +2901,10 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
         self._pet_renderer = self._pet_anim_thread = None
         self._pet_slug = self._pet_kitty_pending = ""
         self._pet_enabled = self._pet_anim_running = False
+        # Idle screensaver (display.screensaver): Rick-on-a-bike animation in the
+        # alt screen while the agent thinks. Driven from CLIStreamMixin._on_thinking.
+        self._screensaver = None
+        self._init_screensaver()
         self._pet_cols: int = 18
         self._pet_scale: float = 0.7
         self._pet_frames_cache: dict = {}

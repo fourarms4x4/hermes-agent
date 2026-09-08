@@ -2527,6 +2527,123 @@ class CLICommandsMixin:
         self.busy_input_mode = arg
         _persist_display_choice("display.busy_input_mode", arg, "Busy input mode", _BUSY_MODE_LONG[arg])
 
+    def _handle_queued_command(self, cmd: str):
+        """Handle /queued — list or clear prompts queued for the next turn.
+
+        Usage:
+            /queued         Show queued prompts (next-first)
+            /queued clear   Drop everything queued for the next turn
+
+        Reads the internal deque of ``self._pending_input`` (a queue.Queue)
+        without consuming it. The unguarded peek mirrors the existing
+        precedent in cli.py (_maybe_continue_goal_after_turn): deque
+        mutation mid-iteration can raise RuntimeError, so fall back to a
+        friendly message on exception. ``clear`` drains with get_nowait(),
+        which is mutex-locked per call — safe without extra locking.
+        """
+        import queue as _queue
+
+        from cli import _ACCENT, _DIM, _RST, _cprint
+
+        parts = cmd.strip().split(maxsplit=1)
+        arg = parts[1].strip().lower() if len(parts) > 1 else ""
+
+        if arg == "clear":
+            n = 0
+            while True:
+                try:
+                    self._pending_input.get_nowait()
+                except _queue.Empty:
+                    break
+                n += 1
+            _cprint(f"  {_ACCENT}✓ Cleared {n} queued prompt{'s' if n != 1 else ''}{_RST}")
+            return
+
+        if arg:
+            _cprint(f"  {_DIM}(._.) Unknown argument: {arg}{_RST}")
+            _cprint(f"  {_DIM}Usage: /queued [clear]{_RST}")
+            return
+
+        try:
+            pending = list(self._pending_input.queue)
+        except Exception:
+            _cprint(f"  {_DIM}Queue is busy — try again in a moment.{_RST}")
+            return
+
+        if not pending:
+            _cprint(f"  {_DIM}Nothing queued for the next turn.{_RST}")
+            _cprint(f"  {_DIM}Use /queue <prompt> to enqueue one.{_RST}")
+            return
+
+        _cprint(f"  {_ACCENT}{len(pending)} queued prompt{'s' if len(pending) != 1 else ''} (next first):{_RST}")
+        for i, entry in enumerate(pending, 1):
+            text = entry
+            # Bundled text+image payloads are (text, images) tuples.
+            if isinstance(text, tuple) and text:
+                text = text[0]
+            rendered = str(text)
+            preview = rendered[:80] + ("..." if len(rendered) > 80 else "")
+            _cprint(f"  {_DIM}{i:>2}.{_RST} {preview}")
+        _cprint(f"  {_DIM}Usage: /queued [clear]{_RST}")
+
+    def _handle_screensaver_command(self, cmd: str):
+        """Handle /screensaver [on|off|status] — toggle the idle screensaver.
+
+        Persists to ``display.screensaver.enabled`` in config.yaml (survives
+        restart) and toggles the live instance immediately. If the instance
+        wasn't built at boot (feature was disabled then), enabling re-inits it.
+        """
+        from cli import _ACCENT, _DIM, _RST, _cprint, save_config_value
+        parts = cmd.strip().split(maxsplit=1)
+        arg = parts[1].strip().lower() if len(parts) > 1 else "status"
+
+        if arg == "status":
+            ss = getattr(self, "_screensaver", None)
+            if ss is not None:
+                state = "enabled" if ss.enabled else "disabled (instance alive but off)"
+                _cprint(f"  {_ACCENT}Screensaver: {state}{_RST}")
+                _cprint(f"  {_DIM}idle_seconds: {ss.idle_seconds} · on screen now: {'yes' if ss.is_active() else 'no'}{_RST}")
+            else:
+                _cprint(f"  {_ACCENT}Screensaver: disabled{_RST}")
+                _cprint(f"  {_DIM}(no live instance — enable with /screensaver on){_RST}")
+            _cprint(f"  {_DIM}Usage: /screensaver [on|off|status]{_RST}")
+            return
+
+        if arg == "on":
+            new_enabled = True
+        elif arg == "off":
+            new_enabled = False
+        else:
+            _cprint(f"  {_DIM}(._.) Unknown argument: {arg}{_RST}")
+            _cprint(f"  {_DIM}Usage: /screensaver [on|off|status]{_RST}")
+            return
+
+        # Toggle the live instance first (works even mid-render: stop() lets
+        # the animation thread exit at the next row boundary and leave the
+        # alt-screen buffer, so nothing is left on screen).
+        ss = getattr(self, "_screensaver", None)
+        if ss is not None:
+            if new_enabled:
+                ss.enabled = True
+                ss._dismissed = False  # re-arm for the next busy period
+            else:
+                ss.enabled = False
+                ss.stop()
+
+        if save_config_value("display.screensaver.enabled", new_enabled):
+            _cprint(f"  {_ACCENT}✓ Screensaver {'enabled' if new_enabled else 'disabled'} (saved to config){_RST}")
+        else:
+            _cprint(f"  {_ACCENT}✓ Screensaver {'enabled' if new_enabled else 'disabled'} (session only){_RST}")
+
+        if new_enabled and ss is None:
+            # Was disabled at boot, so no instance exists — build one now.
+            try:
+                self._init_screensaver()
+            except Exception:
+                pass
+            if getattr(self, "_screensaver", None) is not None:
+                _cprint(f"  {_DIM}Armed — triggers after {self._screensaver.idle_seconds}s idle while busy.{_RST}")
+
     def _handle_indicator_command(self, cmd: str):
         """Handle /indicator [status|kaomoji|emoji|unicode|ascii] — pick the TUI busy-indicator style.
         Persists to ``display.tui_status_indicator`` (the key the TUI reads) for its next render."""

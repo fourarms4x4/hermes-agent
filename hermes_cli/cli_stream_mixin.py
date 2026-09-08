@@ -45,8 +45,32 @@ def _terminal_columns(default: int = 80) -> int:
 class CLIStreamMixin:
     """Streaming output, reasoning preview, tool progress callbacks, and busy-command spinner for the interactive CLI"""
 
+    def _init_screensaver(self) -> None:
+        """Build the idle screensaver from ``display.screensaver``. Optional: never raises."""
+        self._screensaver = None
+        try:
+            from agent.screensaver import Screensaver
+            from hermes_cli.config import load_config
+
+            screensaver_config = (load_config().get("display", {}) or {}).get("screensaver", {}) or {}
+            if screensaver_config.get("enabled", True):
+                self._screensaver = Screensaver(screensaver_config)
+        except Exception:
+            self._screensaver = None
+
     def _on_thinking(self, text: str) -> None:
         """Called by agent when thinking starts/stops. Updates TUI spinner."""
+        # Screensaver first: on thinking-stop we must leave the alt screen and WAIT for it
+        # before the TUI redraws. With _invalidate() first, the response render raced the
+        # async alt-screen teardown — the terminal flashed back to the regular screen and
+        # then re-rendered.
+        if getattr(self, "_screensaver", None):
+            if text:
+                self._screensaver.set_busy(True)
+                self._screensaver.start()
+            else:
+                self._screensaver.set_busy(False)
+                self._screensaver.wait_off_screen()
         if not text:
             self._flush_reasoning_preview(force=True)
         self._spinner_text = text or ""

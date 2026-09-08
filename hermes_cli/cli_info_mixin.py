@@ -447,6 +447,15 @@ class CLIInfoMixin:
         """Return True when /steer should be dispatched immediately while the agent is running."""
         return self._busy_inline_command(text, has_images, ("steer",))
 
+    def _should_handle_queued_command_inline(self, text: str, has_images: bool = False) -> bool:
+        """Return True when /queued should be dispatched while the agent runs.
+
+        The whole point of /queued is inspecting ``_pending_input`` mid-run, but a slash
+        command typed while busy lands in ``_pending_input`` itself and the input loop is
+        blocked inside ``chat()`` — so a queued dispatch would only fire after the turn,
+        reporting queue state that is already stale."""
+        return self._busy_inline_command(text, has_images, ("queued",))
+
     def _should_handle_background_command_inline(
         self, text: str, has_images: bool = False) -> bool:
         """Return True when /bg or /btw should be dispatched while the agent runs (their

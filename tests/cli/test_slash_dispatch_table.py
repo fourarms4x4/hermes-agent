@@ -40,6 +40,14 @@ def test_every_old_branch_resolves_to_a_handler():
         assert (method_name, pass_arg) != (f"_handle_{name.replace('-', '_')}_command", True), name
 
 
+# Commands this checkout adds on top of upstream (local/screensaver). They never had a
+# branch in the old if/elif chain, so they are not OLD_CHAIN_COMMANDS — but they DO
+# resolve to a handler via the naming convention, and the parity assertion below is an
+# exact set comparison. Listing them here keeps the guard meaningful for everything else
+# instead of loosening it to a subset check.
+LOCAL_COMMANDS = {"screensaver", "queued"}
+
+
 def test_registry_names_resolve_into_the_table():
     from hermes_cli.commands import COMMAND_REGISTRY, resolve_command
 
@@ -48,7 +56,7 @@ def test_registry_names_resolve_into_the_table():
         assert cmd is not None and HermesCLI._slash_handler(cmd.name) is not None, name
     # registry commands the CLI never handled inline must still fall through
     dispatched = {c.name for c in COMMAND_REGISTRY if HermesCLI._slash_handler(c.name)}
-    assert dispatched == set(OLD_CHAIN_COMMANDS) - {"exit"} | {"quit"}
+    assert dispatched == set(OLD_CHAIN_COMMANDS) - {"exit"} | {"quit"} | LOCAL_COMMANDS
 
 
 def _cli():
