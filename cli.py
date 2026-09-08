@@ -5306,11 +5306,27 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             model_short = model_short[:-5]
         if len(model_short) > 26:
             model_short = f"{model_short[:23]}..."
+        # A fallback hop is NOT the model the user chose, and the bar used to
+        # render it identically — so a demotion to hop 1 looked like the bar
+        # lying about the model. Mark it. `⤵` reads as "dropped down to this";
+        # /model spells the same state out in words.
+        fallback_active = bool(getattr(agent, "_fallback_activated", False))
+        primary_model = ""
+        if fallback_active:
+            try:
+                primary_model = str(
+                    (getattr(agent, "_primary_runtime", None) or {}).get("model") or ""
+                )
+            except Exception:
+                primary_model = ""
+            model_short = f"{model_short} ⤵"
 
         elapsed_seconds = max(0.0, (datetime.now() - self.session_start).total_seconds())
         snapshot = {
             "model_name": model_name,
             "model_short": model_short,
+            "fallback_active": fallback_active,
+            "primary_model": primary_model,
             "duration": format_duration_compact(elapsed_seconds),
             "session_title": self._get_status_bar_session_title(),
             "prompt_elapsed": self._format_prompt_elapsed(
@@ -9106,12 +9122,32 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         """Open prompt_toolkit-native /model picker modal."""
         self._capture_modal_input_snapshot()
         default_idx = next((i for i, p in enumerate(providers) if p.get("is_current")), 0)
+        # `current_model` is the CONFIGURED model (self.model), which a fallback
+        # never touches — while the status bar shows the LIVE one (agent.model).
+        # When a hop is active the two surfaces disagree and neither said why,
+        # so the picker claimed a model that wasn't answering. Name both.
+        fallback_note = ""
+        try:
+            _ag = getattr(self, "agent", None)
+            if _ag is not None and getattr(_ag, "_fallback_activated", False):
+                _live_model = str(getattr(_ag, "model", "") or "")
+                _live_provider = str(getattr(_ag, "provider", "") or "")
+                if _live_model and (_live_model, _live_provider) != (
+                    current_model, current_provider,
+                ):
+                    fallback_note = (
+                        f"⚠ fallback active — answering on {_live_model} "
+                        f"via {_live_provider}"
+                    )
+        except Exception:
+            fallback_note = ""
         self._model_picker_state = {
             "stage": "provider",
             "providers": providers,
             "selected": default_idx,
             "current_model": current_model,
             "current_provider": current_provider,
+            "fallback_note": fallback_note,
             "user_provs": user_provs,
             "custom_provs": custom_provs,
         }
@@ -17262,7 +17298,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 else:
                     hint = "No models listed for this provider. Use Back or Cancel."
 
-            box_width = _panel_box_width(title, [hint] + choices, min_width=46, max_width=84)
+            fallback_note = state.get("fallback_note") or ""
+            _width_lines = [hint] + ([fallback_note] if fallback_note else []) + choices
+            box_width = _panel_box_width(title, _width_lines, min_width=46, max_width=84)
             inner_text_width = max(8, box_width - 6)
             selected = state.get("selected", 0)
 
@@ -17286,6 +17324,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             lines.append(('class:clarify-border', ' ' + ('─' * max(0, box_width - len(title) - 3)) + '╮\n'))
             _append_blank_panel_line(lines, 'class:clarify-border', box_width)
             _append_panel_line(lines, 'class:clarify-border', 'class:clarify-hint', hint, box_width)
+            if fallback_note:
+                _append_panel_line(
+                    lines, 'class:clarify-border', 'class:clarify-hint',
+                    fallback_note, box_width,
+                )
             _append_blank_panel_line(lines, 'class:clarify-border', box_width)
             for idx in range(scroll_offset, scroll_offset + visible):
                 choice = choices[idx]

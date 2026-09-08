@@ -1156,6 +1156,24 @@ class AIAgent:
         try:
             notice = getattr(self, "_pending_fallback_notice", None)
             if notice:
+                # Hold it while tokens are streaming. _emit_status forces the
+                # print past _vprint's stream guard, which lands the line in
+                # the MIDDLE of the answer the user is reading — observed
+                # 2026-09-08, a switch notice spliced between two bullets of a
+                # response. Keep it pending instead; the next turn flushes it
+                # before any streaming starts (see turn_context).
+                #
+                # Fails OPEN: if the streaming state can't be read, emit now.
+                # A held notice that never gets flushed would silently hide a
+                # model change, which is the bug this whole notice exists for.
+                try:
+                    _streaming = (
+                        self._has_stream_consumers() and not self._executing_tools
+                    )
+                except Exception:
+                    _streaming = False
+                if _streaming:
+                    return
                 # Clear before emitting so a (swallowed) callback error can't
                 # leave the notice set for a stale re-emit on a later turn.
                 self._pending_fallback_notice = None

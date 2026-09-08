@@ -1540,6 +1540,13 @@ def restore_primary_runtime(agent) -> bool:
     agent._restore_wait_logged = False
 
     rt = agent._primary_runtime
+    # Remember what we are leaving so the restore can be announced. A
+    # demotion prints one visible line (_pending_fallback_notice) but the
+    # return trip used to be logger.info only, so from the user's seat the
+    # model changed twice and Hermes mentioned it once — which reads as
+    # "it switches models whenever it wants".
+    _leaving_model = str(getattr(agent, "model", "") or "")
+    _leaving_provider = str(getattr(agent, "provider", "") or "")
     try:
         # ── Core runtime state ──
         agent.model = rt["model"]
@@ -1736,6 +1743,21 @@ def restore_primary_runtime(agent) -> bool:
             "Primary runtime restored for new turn: %s (%s)",
             agent.model, agent.provider,
         )
+        # Mirror the demotion notice so both halves of the round trip are
+        # visible. Only when the model or provider actually changed — a
+        # same-model restore (e.g. primary and hop 1 are both
+        # deepseek-v4-flash on different endpoints) still counts, because the
+        # endpoint is what the user is being billed by.
+        if (_leaving_model, _leaving_provider) != (agent.model, agent.provider):
+            _emit = getattr(agent, "_emit_status", None)
+            if callable(_emit):
+                try:
+                    _emit(
+                        f"✓ Restored primary model: {_leaving_model} via "
+                        f"{_leaving_provider} → {agent.model} via {agent.provider}"
+                    )
+                except Exception:
+                    logger.debug("restore notice emit failed", exc_info=True)
         return True
     except Exception as e:
         logger.warning("Failed to restore primary runtime: %s", e)

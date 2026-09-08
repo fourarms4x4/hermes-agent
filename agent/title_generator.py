@@ -142,6 +142,13 @@ _MACHINE_PREFIXES = (
     # actual question. Keep in sync with
     # tui_gateway.server._MODEL_SWITCH_MARKER_PREFIX.
     "[System: The active model for this chat has changed to ",
+    # The CLI's own model-switch note (cli.py ``_pending_model_switch_note``),
+    # which is likewise injected with role="user". Without this entry a
+    # /model switch before the first real message titles the session
+    # "[Note: model was just switched from deepseek-v4-flash to..." — observed
+    # in the wild 2026-09-08, where it also became the status bar's session
+    # title. Keep in sync with the f-string in cli.py.
+    "[Note: model was just switched from ",
 )
 
 

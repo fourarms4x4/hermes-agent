@@ -478,6 +478,17 @@ def build_turn_context(
     # Bind the skill write-origin ContextVar for this thread.
     set_current_write_origin(getattr(agent, "_memory_write_origin", "assistant_tool"))
 
+    # Surface any fallback-switch notice the previous turn had to hold back
+    # because tokens were streaming (see _emit_pending_fallback_notice). Here
+    # is stream-free, so the line lands cleanly above the new prompt instead
+    # of inside the last answer.
+    try:
+        _flush_notice = getattr(agent, "_emit_pending_fallback_notice", None)
+        if callable(_flush_notice):
+            _flush_notice()
+    except Exception:
+        pass
+
     # Restore the primary runtime if the previous turn activated fallback.
     agent._restore_primary_runtime()
 
