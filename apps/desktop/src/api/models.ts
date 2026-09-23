@@ -9,19 +9,11 @@ import type {
   ModelInfoResponse
 } from '@/types/hermes'
 
-import {
-  capabilityScoped,
-  hermesApi,
-  type ProfileScope,
-  profileScoped,
-  scopedDialPriority,
-  STARTUP_REQUEST_TIMEOUT_MS
-} from './client'
+import { capabilityScoped, hermesApi, type ProfileScope, profileScoped, STARTUP_REQUEST_TIMEOUT_MS } from './client'
 
 export function getGlobalModelInfo(profile?: null | string): Promise<ModelInfoResponse> {
   return hermesApi<ModelInfoResponse>({
     ...profileScoped(profile),
-    ...scopedDialPriority(profile),
     path: '/api/model/info',
     timeoutMs: STARTUP_REQUEST_TIMEOUT_MS
   })
@@ -58,7 +50,6 @@ export function getGlobalModelOptions(
 
   return hermesApi<ModelOptionsResult>({
     ...profileScoped(profile),
-    ...scopedDialPriority(profile),
     path: params.size > 0 ? `/api/model/options?${params.toString()}` : '/api/model/options',
     timeoutMs: STARTUP_REQUEST_TIMEOUT_MS
   })
@@ -80,7 +71,6 @@ export function getRecommendedDefaultModel(
 ): Promise<RecommendedDefaultModel> {
   return hermesApi<RecommendedDefaultModel>({
     ...profileScoped(profile),
-    ...scopedDialPriority(profile),
     path: `/api/model/recommended-default?provider=${encodeURIComponent(provider)}`
   })
 }
@@ -104,7 +94,6 @@ export function setGlobalModel(
 export function getAuxiliaryModels(profile?: null | string): Promise<AuxiliaryModelsResponse> {
   return hermesApi<AuxiliaryModelsResponse>({
     ...profileScoped(profile),
-    ...scopedDialPriority(profile),
     path: '/api/model/auxiliary'
   })
 }
@@ -112,7 +101,6 @@ export function getAuxiliaryModels(profile?: null | string): Promise<AuxiliaryMo
 export function getMoaModels(profile?: null | string): Promise<MoaConfigResponse> {
   return hermesApi<MoaConfigResponse>({
     ...profileScoped(profile),
-    ...scopedDialPriority(profile),
     path: '/api/model/moa'
   })
 }
@@ -123,7 +111,6 @@ export function saveMoaModels(
 ): Promise<MoaConfigResponse & { ok: boolean }> {
   return hermesApi<MoaConfigResponse & { ok: boolean }>({
     ...profileScoped(profile),
-    ...scopedDialPriority(profile),
     path: '/api/model/moa',
     method: 'PUT',
     body
@@ -136,7 +123,6 @@ export function setModelAssignment(
 ): Promise<ModelAssignmentResponse> {
   return hermesApi<ModelAssignmentResponse>({
     ...profileScoped(profile),
-    ...scopedDialPriority(profile),
     path: '/api/model/set',
     method: 'POST',
     body

@@ -1,9 +1,7 @@
-"""Parity guard for the slash-command dispatch table in cli.HermesCLI.
+"""Slash-command dispatch semantics in cli.HermesCLI.
 
-Every canonical command that had a branch in the old if/elif chain must
-resolve to a handler in ``_SLASH_DISPATCH``, and the pre-dispatch side effects
-(pre_command hook, pending-resume reset, unknown-command fallthrough) must
-keep their old semantics.
+The pre-dispatch side effects (pre_command hook, pending-resume reset,
+unknown-command fallthrough) and return semantics must hold.
 """
 from unittest.mock import MagicMock, patch
 
