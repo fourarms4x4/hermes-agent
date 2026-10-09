@@ -124,20 +124,20 @@ moa:
         raise AssertionError("MoA restore must not build a real OpenAI client")
 
     monkeypatch.setattr(agent, "_create_openai_client", fail_openai_rebuild)
-    setattr(agent, "_fallback_activated", True)
-    setattr(agent, "provider", "zai")
-    setattr(agent, "model", "glm-5.2")
+    agent._fallback_activated = True
+    agent.provider = "zai"
+    agent.model = "glm-5.2"
     agent.base_url = "https://api.z.ai/api/coding/paas/v4"
     agent.api_key = "fallback-key"
-    setattr(agent, "_client_kwargs", {"api_key": "fallback-key", "base_url": agent.base_url})
+    agent._client_kwargs = {"api_key": "fallback-key", "base_url": agent.base_url}
     agent.client = SimpleNamespace(close=lambda: None, _client=SimpleNamespace(is_closed=True))
 
     assert agent._restore_primary_runtime() is True
-    assert getattr(agent, "provider") == "moa"
-    assert getattr(agent, "model") == "review"
+    assert agent.provider == "moa"
+    assert agent.model == "review"
     assert agent.client is not primary_client
     assert hasattr(agent.client.chat, "completions")
-    assert getattr(agent, "_fallback_activated") is False
+    assert agent._fallback_activated is False
 
 
 def test_moa_restored_facade_still_emits_reference_events(monkeypatch, tmp_path):
@@ -181,12 +181,12 @@ moa:
     )
 
     # Simulate a fallback to a real provider, then restore.
-    setattr(agent, "_fallback_activated", True)
-    setattr(agent, "provider", "zai")
-    setattr(agent, "model", "glm-5.2")
+    agent._fallback_activated = True
+    agent.provider = "zai"
+    agent.model = "glm-5.2"
     agent.base_url = "https://api.z.ai/api/coding/paas/v4"
     agent.api_key = "fallback-key"
-    setattr(agent, "_client_kwargs", {"api_key": "fallback-key", "base_url": agent.base_url})
+    agent._client_kwargs = {"api_key": "fallback-key", "base_url": agent.base_url}
     agent.client = SimpleNamespace(close=lambda: None, _client=SimpleNamespace(is_closed=True))
     assert agent._restore_primary_runtime() is True
 
@@ -515,7 +515,7 @@ def test_run_reference_prepends_advisory_system_prompt(monkeypatch):
 
     monkeypatch.setattr("agent.moa_loop.call_llm", fake_call_llm)
 
-    label, text, _acct = _run_reference(
+    _label, text, _acct = _run_reference(
         {"provider": "openai-codex", "model": "gpt-5.5"},
         [{"role": "user", "content": "review this PR"}],
     )
@@ -669,7 +669,7 @@ def test_slot_runtime_anthropic_oauth_routes_through_provider_branch(monkeypatch
 
     # The chokepoint preserves anthropic identity despite the explicit base_url,
     # so call_llm routes through the anthropic provider branch (not custom).
-    resolved_provider, _model, base_url, _api_key, _mode = _resolve_task_provider_model(
+    resolved_provider, _model, _base_url, _api_key, _mode = _resolve_task_provider_model(
         task="moa_reference",
         provider="anthropic",
         model="claude-opus-4-8",
@@ -725,7 +725,7 @@ def test_run_reference_captures_usage_and_cost(monkeypatch):
         lambda *a, **k: SimpleNamespace(amount_usd=0.0123, status="estimated", source="table"),
     )
 
-    label, text, acct = _run_reference(
+    _label, text, acct = _run_reference(
         {"provider": "openrouter", "model": "vendor/adv-model"},
         [{"role": "user", "content": "state?"}],
     )
@@ -1019,6 +1019,7 @@ def test_late_completing_interrupted_reference_feeds_accounting_sink(monkeypatch
     """A reference still in flight at interrupt time gets a placeholder in
     the results, but its eventual REAL accounting must reach the sink."""
     import threading
+    import time
 
     from agent import moa_loop
 
@@ -1065,10 +1066,14 @@ def test_late_completing_interrupted_reference_feeds_accounting_sink(monkeypatch
 
     # …then completes late; its real billed usage must reach the sink.
     release.set()
-    assert sink_seen.wait(timeout=5), "late accounting sink never called"
-    label, acct = sink_calls[0]
-    assert "wedged" in label
-    assert acct.usage.input_tokens == 21
+    # Under load the poll loop can see the interrupt before it collects the fast slot too, so fast may
+    # also arrive late and first; the contract is about the wedged slot's row, not sink ordering.
+    deadline = time.monotonic() + 5
+    while not any("wedged" in label for label, _ in sink_calls) and time.monotonic() < deadline:
+        sink_seen.wait(timeout=0.2)
+    wedged = [acct for label, acct in sink_calls if "wedged" in label]
+    assert wedged, f"late accounting for the wedged slot never reached the sink: {[l for l, _ in sink_calls]}"
+    assert wedged[0].usage.input_tokens == 21
 
 
 def test_facade_does_not_cache_interrupted_reference_results(monkeypatch, tmp_path):
@@ -1209,6 +1214,84 @@ def test_reference_trim_caches_resolution_failures(monkeypatch):
     assert stub.calls == 1
     assert cache == {("openrouter", "small-window"): None}
 
+
+def _naive_reference_trim(messages, budget):
+    """The original pop-and-re-estimate loop, kept as the spec for equivalence."""
+    from agent.model_metadata import estimate_messages_tokens_rough
+
+    has_system = bool(messages) and messages[0].get("role") == "system"
+    head = [messages[0]] if has_system else []
+    body = list(messages[1:] if has_system else messages)
+    while len(body) > 2 and estimate_messages_tokens_rough(head + body) > budget:
+        body.pop(0)
+        while len(body) > 2 and body[0].get("role") == "assistant":
+            body.pop(0)
+    while len(body) > 1 and body[0].get("role") == "assistant":
+        body.pop(0)
+    return head + body
+
+
+def test_reference_trim_matches_naive_pop_loop(monkeypatch):
+    """Running-total trim returns the same frames as the naive loop."""
+    import random
+
+    from agent import moa_loop
+
+    rng = random.Random(20260802)
+    for _ in range(60):
+        pairs = rng.randint(1, 30)
+        msgs = []
+        if rng.random() < 0.8:
+            msgs.append({"role": "system", "content": "advisory " + "s" * rng.randint(0, 200)})
+        for _i in range(pairs):
+            msgs.append({"role": "user", "content": "u" * rng.randint(0, 800)})
+            msgs.append({"role": "assistant", "content": "a" * rng.randint(0, 800)})
+            # Occasional assistant runs to exercise the user-first sweep.
+            if rng.random() < 0.2:
+                msgs.append({"role": "assistant", "content": "extra"})
+        msgs.append({"role": "user", "content": "judge the state above"})
+
+        window = rng.choice([800, 1500, 3000, 6000])
+        reserve = rng.choice([0, 50, 500])
+        reserve_eff = reserve if reserve > 0 else moa_loop._REFERENCE_DEFAULT_OUTPUT_RESERVE
+        budget = int(window * (1.0 - moa_loop._REFERENCE_TRIM_SAFETY_FRACTION)) - reserve_eff
+
+        # The real function returns the messages untouched when the budget
+        # is not positive; the naive loop has no such early exit.
+        expected = (
+            _naive_reference_trim(list(msgs), budget)
+            if budget > 0
+            else list(msgs)
+        )
+        got = _trim(
+            list(msgs),
+            window=window,
+            reserve=reserve if reserve > 0 else None,
+            monkeypatch=monkeypatch,
+        )
+        assert got == expected
+
+
+def test_reference_trim_weighs_each_message_once(monkeypatch):
+    """Heavy trims stay O(n): no full re-estimate per dropped frame."""
+    from agent import model_metadata
+
+    weighed = {"n": 0}
+    real = model_metadata.estimate_messages_tokens_rough
+
+    def counting(msgs):
+        weighed["n"] += len(msgs)
+        return real(msgs)
+
+    monkeypatch.setattr(
+        model_metadata, "estimate_messages_tokens_rough", counting
+    )
+    msgs = _advisory_view(100)
+    out = _trim(list(msgs), window=3000, reserve=50, monkeypatch=monkeypatch)
+    assert len(out) < len(msgs)
+    # One full-list estimate plus one single-message weigh per frame: 2n.
+    # The naive loop would weigh ~n^2/2 for a trim this deep.
+    assert weighed["n"] <= 2 * len(msgs)
 
 
 

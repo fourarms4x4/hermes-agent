@@ -139,7 +139,7 @@ class ReasoningParamsMixin:
     def _github_models_reasoning_extra_body(self) -> dict | None:
         """Format reasoning payload for GitHub Models/OpenAI-compatible routes."""
         try:
-            from hermes_cli.models import github_model_reasoning_efforts
+            from hermes_cli.models import clamp_github_reasoning_effort, github_model_reasoning_efforts
         except Exception:
             return None
 
@@ -150,13 +150,7 @@ class ReasoningParamsMixin:
         cfg = self.reasoning_config if isinstance(self.reasoning_config, dict) else {}
         if cfg.get("enabled") is False:
             return None
-        effort = str(cfg.get("effort", "medium")).strip().lower()
-
-        if effort not in supported:
-            # Nearest-neighbour fallbacks: xhigh→high, minimal→low, else medium, else the first published level.
-            nearest = {"xhigh": "high", "minimal": "low"}.get(effort)
-            effort = nearest if nearest in supported else "medium" if "medium" in supported else supported[0]
-        return {"effort": effort}
+        return {"effort": clamp_github_reasoning_effort(cfg.get("effort"), supported)}
 
     _build_assistant_message = _forward("agent.chat_completion_helpers", "build_assistant_message")
 
@@ -216,7 +210,7 @@ class ReasoningParamsMixin:
     _reapply_reasoning_echo_for_provider = _forward("agent.agent_runtime_helpers", "reapply_reasoning_echo_for_provider")
 
     @staticmethod
-    def _sanitize_tool_calls_for_strict_api(api_msg: dict, model: "str | None" = None) -> dict:
+    def _sanitize_tool_calls_for_strict_api(api_msg: dict, model: str | None = None) -> dict:
         """Strip Codex Responses fields from tool_calls for strict Chat Completions APIs (Mistral, Fireworks
         400/422 on unknown fields). ``extra_content`` (Gemini thought_signature) is kept only for Gemini-family
         models. Builds new dicts so the internal history keeps the Codex fields for a later fallback."""

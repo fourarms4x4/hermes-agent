@@ -3,6 +3,7 @@ cache-only catalogs and live-probe only the currently selected custom endpoint, 
 stale provider cache cannot freeze the gateway on blocking HTTP fetches.
 """
 
+import threading
 
 import pytest
 
@@ -43,7 +44,7 @@ def _isolated_config(tmp_path, monkeypatch):
     hermes_home.mkdir()
     (hermes_home / "config.yaml").write_text("model:\n  default: gpt-x\n  provider: openrouter\nproviders: {}\n", encoding="utf-8")
     monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
-    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", dict)
     return hermes_home
 
 
@@ -70,6 +71,31 @@ class _FakePickerAdapter:
         return None
 
 
+
+
+@pytest.mark.asyncio
+async def test_picker_path_runs_provider_listing_off_the_event_loop(_isolated_config, monkeypatch):
+    """#41289/#41304: ``list_picker_providers`` can fall through to a blocking HTTP fetch, so the
+    picker branch must run it on a worker thread — never on the gateway's event-loop thread."""
+    listing_threads: list[int] = []
+
+    def _fake_list_picker_providers(**kwargs):
+        listing_threads.append(threading.get_ident())
+        return [{"slug": "openrouter", "name": "OpenRouter", "is_current": True,
+                 "models": ["gpt-x"], "total_models": 1}]
+
+    monkeypatch.setattr("hermes_cli.model_switch_providers.list_picker_providers", _fake_list_picker_providers)
+    runner = _make_runner()
+    runner.adapters = {Platform.TELEGRAM: _FakePickerAdapter()}
+    monkeypatch.setattr(runner, "_thread_metadata_for_source", lambda *a, **k: None, raising=False)
+    monkeypatch.setattr(runner, "_reply_anchor_for_event", lambda *a, **k: None, raising=False)
+
+    # Picker "sent" => handler returns None, proving it got past the listing call.
+    assert await runner._handle_model_command(_make_event()) is None
+    assert listing_threads, "listing never ran"
+    assert threading.get_ident() not in listing_threads, (
+        "list_picker_providers ran inline on the event-loop thread"
+    )
 
 
 @pytest.mark.asyncio

@@ -13,7 +13,7 @@ import {
 
 // These cover the non-macOS (host-native on the Linux CI lane) arms. The
 // macOS arms key off a module-level `isMac` and would need the interpreter to
-// believe it is on darwin — see AGENTS.md "Don't fake the host OS".
+// believe it is on darwin — see tests/AGENTS.md "Don't fake the host OS".
 const describeHost = describe.skipIf(isMac)
 
 describeHost('platform action modifier', () => {
@@ -60,7 +60,6 @@ describeHost('parseVoiceRecordKey (#18994)', () => {
 
   it('parses ctrl+<letter> bindings', () => {
     expect(parseVoiceRecordKey('ctrl+o')).toEqual({ ch: 'o', mod: 'ctrl', raw: 'ctrl+o' })
-    expect(parseVoiceRecordKey('Ctrl+R')).toEqual({ ch: 'r', mod: 'ctrl', raw: 'ctrl+r' })
   })
 
   it('parses alt/super aliases', () => {
@@ -147,6 +146,7 @@ describeHost('parseVoiceRecordKey (#18994)', () => {
     expect(parseVoiceRecordKey('ctrl+c')).toEqual(DEFAULT_VOICE_RECORD_KEY)
     expect(parseVoiceRecordKey('ctrl+d')).toEqual(DEFAULT_VOICE_RECORD_KEY)
     expect(parseVoiceRecordKey('ctrl+l')).toEqual(DEFAULT_VOICE_RECORD_KEY)
+    expect(parseVoiceRecordKey('ctrl+r')).toEqual(DEFAULT_VOICE_RECORD_KEY)
     // Alt-modifier versions of those letters are NOT intercepted, so
     // they remain usable.
     expect(parseVoiceRecordKey('alt+c').mod).toBe('alt')

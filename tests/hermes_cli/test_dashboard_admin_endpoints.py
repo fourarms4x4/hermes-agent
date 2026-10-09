@@ -244,6 +244,51 @@ class TestMemoryEndpoints:
             "/api/memory/reset", json={"target": "bogus"}
         ).status_code == 400
 
+    _SCOPEDPROV_INIT = """
+from agent.memory_provider import MemoryProvider
+from agent.secret_scope import get_secret
+
+
+class ScopedProvMemoryProvider(MemoryProvider):
+    @property
+    def name(self):
+        return "scopedprov"
+
+    def is_available(self):
+        # A credentialed provider: availability IS a scoped secret read.
+        return bool(get_secret("SCOPEDPROV_API_KEY"))
+
+    def initialize(self, session_id, **kwargs):
+        pass
+
+    def get_tool_schemas(self):
+        return []
+"""
+
+    def test_plugins_hub_resolves_launch_profile_secrets_under_multiplex(self):
+        """The hub is built for the dashboard's own (launch) profile. Once the process hosts a
+        second profile home, ``get_secret`` fails closed for unscoped reads; a provider whose
+        ``is_available`` reads the launch profile's credential must still resolve it from the
+        launch home's ``.env`` instead of rendering "unavailable" with no visible error
+        (``probe_availability`` swallows the ``UnscopedSecretError``)."""
+        from hermes_constants import get_hermes_home
+        from hermes_cli.web_server_dashboard import _invalidate_plugins_hub_cache
+        from tui_gateway.launch_profile_policy import activate_multi_profile_hosting
+
+        home = get_hermes_home()
+        (home / ".env").write_text("SCOPEDPROV_API_KEY=launch-key\n", encoding="utf-8")
+        plugin_dir = home / "plugins" / "scopedprov"
+        plugin_dir.mkdir(parents=True)
+        (plugin_dir / "__init__.py").write_text(self._SCOPEDPROV_INIT, encoding="utf-8")
+        _invalidate_plugins_hub_cache()
+        activate_multi_profile_hosting()  # the conftest resets the latch after the test
+
+        hub = self.client.get("/api/dashboard/plugins/hub")
+        assert hub.status_code == 200, hub.text
+        providers = hub.json()["providers"]["memory_options"]
+        row = next(p for p in providers if p["name"] == "scopedprov")
+        assert row["available"] is True and row["status"] == "ready", row
+
 
 class TestPairingEndpoints:
     @pytest.fixture(autouse=True)
@@ -345,6 +390,12 @@ class TestWebhookEndpoints:
         subs = self.client.get("/api/webhooks").json()["subscriptions"]
         assert subs[0]["script"] == "todoist_filter.py"
 
+        # A re-POST is a general update, not an enable: an explicit disable must survive it.
+        assert self.client.put("/api/webhooks/todoist/enabled", json={"enabled": False}).status_code == 200
+        assert self.client.post("/api/webhooks", json={"name": "todoist", "deliver": "log"}).status_code == 200
+        from hermes_cli.webhook import _load_subscriptions
+        assert _load_subscriptions()["todoist"]["enabled"] is False
+
     def test_enable_platform_starts_gateway_restart(self, monkeypatch):
         from hermes_cli.config import load_config
 
@@ -372,7 +423,8 @@ class TestWebhookEndpoints:
             "restart_action": "gateway-restart",
             "restart_pid": 4242,
         }
-        assert restart_calls == [(["gateway", "restart"], "gateway-restart")]
+        # The default home is named explicitly: a bare child would re-read the sticky active_profile.
+        assert restart_calls == [(["-p", "default", "gateway", "restart"], "gateway-restart")]
         assert load_config()["platforms"]["webhook"]["enabled"] is True
         assert self.client.get("/api/webhooks").json()["enabled"] is True
 
@@ -642,7 +694,7 @@ class TestSkillsHubPreviewEndpoint:
 
     def test_preview_returns_skill_md_text(self, monkeypatch):
         monkeypatch.setattr(
-            "tools.skills_hub_search.create_source_router", lambda: []
+            "tools.skills_hub_search.create_source_router", list
         )
         bundle = _FakeBundle("github/owner/repo/x")
         meta = _FakeMeta("github/owner/repo/x")
@@ -663,7 +715,7 @@ class TestSkillsHubPreviewEndpoint:
 
     def test_preview_404_when_unresolved(self, monkeypatch):
         monkeypatch.setattr(
-            "tools.skills_hub_search.create_source_router", lambda: []
+            "tools.skills_hub_search.create_source_router", list
         )
         monkeypatch.setattr(
             "hermes_cli.skills_hub._resolve_source_meta_and_bundle",
@@ -683,7 +735,7 @@ class TestSkillsHubScanEndpoint:
         from tools.skills_guard import ScanResult, Finding
 
         monkeypatch.setattr(
-            "tools.skills_hub_search.create_source_router", lambda: []
+            "tools.skills_hub_search.create_source_router", list
         )
         bundle = _FakeBundle("github/owner/repo/x", trust_level="community")
         monkeypatch.setattr(
@@ -752,9 +804,9 @@ class TestUpdateCheckEndpoint:
 
         monkeypatch.setattr(_cfg_mod, "detect_install_method", lambda *a, **k: "git")
         # Stub the shared checker so the contract is deterministic (no network).
-        import hermes_cli.banner as banner
+        from hermes_cli import banner
 
-        monkeypatch.setattr(banner, "check_for_updates", lambda: 5)
+        monkeypatch.setattr("hermes_cli.source_check.check_for_updates", lambda **kw: {"behind": 5, "commits": []})
 
         r = self.client.get("/api/hermes/update/check")
         assert r.status_code == 200
@@ -792,6 +844,14 @@ class TestUpdateCheckEndpoint:
         assert body["update_available"] is False
         assert body["behind"] is None
         assert "managed outside this dashboard" in body["message"]
+        # No runnable command exists; clients render update_command verbatim
+        # as a copyable shell line, so prose here is a fake command.
+        assert body["update_command"] == ""
+
+        refused = self.client.post("/api/hermes/update").json()
+        assert refused["ok"] is False
+        assert refused["error"] == "dashboard_update_managed_externally"
+        assert refused["update_command"] == ""
 
 
 class TestDebugShareEndpoint:
@@ -945,7 +1005,7 @@ def test_named_profile_action_isolates_parent_env_and_loads_target_env(monkeypat
     import sys
     from pathlib import Path
 
-    import hermes_cli.env_loader as env_loader
+    from hermes_cli import env_loader
     import hermes_cli.web_server as ws
 
     user_home = tmp_path / "user"
@@ -1083,6 +1143,7 @@ def test_desktop_lifespan_terminates_managed_gateway_restart(monkeypatch):
             calls.append("terminate")
 
     monkeypatch.setenv("HERMES_DESKTOP", "1")
+    monkeypatch.setenv("HERMES_DASHBOARD_SESSION_TOKEN", "desktop-spawn-token")
     monkeypatch.setattr(ws, "_warm_gateway_module", lambda: None)
     monkeypatch.setattr(ws, "_start_desktop_cron_ticker", lambda *_args: None)
     monkeypatch.setitem(_web_server_gateway._ACTION_PROCS, "gateway-restart", _FakeRunningProc())
@@ -1092,3 +1153,31 @@ def test_desktop_lifespan_terminates_managed_gateway_restart(monkeypatch):
         pass
 
     assert calls == ["terminate"]
+
+
+def test_desktop_lifespan_reaps_orphans_with_a_startup_grace(monkeypatch):
+    """The boot sweep must pass the startup grace, not reap a just-launching gateway (#122533).
+
+    Asserting only "the reaper ran" would not catch a revert to the bare
+    ``_reap_unsupervised_gateway_orphans()`` call, which is exactly the regression.
+    """
+    import hermes_cli.web_server as ws
+    from hermes_cli.dashboard_procs import _REAP_MIN_AGE_SECONDS
+
+    seen = {}
+
+    def _fake_reap(extra_exclude=None, *, min_age_s=0.0):
+        seen["min_age_s"] = min_age_s
+        return False
+
+    monkeypatch.setenv("HERMES_DESKTOP", "1")
+    monkeypatch.setenv("HERMES_DASHBOARD_SESSION_TOKEN", "desktop-spawn-token")
+    monkeypatch.setattr(ws, "_warm_gateway_module", lambda: None)
+    monkeypatch.setattr(ws, "_start_desktop_cron_ticker", lambda *_args: None)
+    monkeypatch.setattr("hermes_cli.gateway._reap_unsupervised_gateway_orphans", _fake_reap)
+
+    client, _header = _client()
+    with client:
+        pass
+
+    assert seen["min_age_s"] == _REAP_MIN_AGE_SECONDS

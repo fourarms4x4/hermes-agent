@@ -15,7 +15,6 @@ from unittest.mock import patch
 
 import pytest
 
-
 class TestAuxProbeMode:
     def test_probe_mode_returns_stub_without_openai_import(self):
         import agent.auxiliary_client as aux
@@ -87,9 +86,6 @@ class TestAuxProbeMode:
             t.join()
         assert seen["active"] is False
 
-
-
-
 class TestVisionCheckUsesProbeMode:
     def test_check_vision_requirements_enters_probe_mode(self):
         from tools import vision_tools
@@ -104,7 +100,6 @@ class TestVisionCheckUsesProbeMode:
         with patch.object(aux, "resolve_vision_provider_client", fake_resolver):
             assert vision_tools.check_vision_requirements() is True
         assert states and all(states)
-
 
 class TestLazyMcpSdk:
     def test_module_import_does_not_import_mcp_sdk(self):
@@ -124,9 +119,6 @@ class TestLazyMcpSdk:
         assert proc.returncode == 0, proc.stderr
         assert "ok" in proc.stdout
 
-
-
-
     def test_lazy_symbol_getattr_resolves_via_ensure(self):
         import importlib.util
         from tools import mcp_tool
@@ -135,14 +127,13 @@ class TestLazyMcpSdk:
             pytest.skip("mcp SDK not installed")
         # getattr through the module (what mock.patch does when saving the
         # original) must materialize the symbol instead of AttributeError.
-        assert getattr(mcp_tool, "StdioServerParameters") is not None
-
+        assert mcp_tool.StdioServerParameters is not None
 
 class TestBannerUpdateCheckNonBlocking:
     def test_banner_does_not_block_on_pending_update_check(self):
         """When the prefetch hasn't finished, the banner path must return in
         well under the old 500ms blocking wait."""
-        import hermes_cli.banner as banner
+        from hermes_cli import banner
 
         with patch.object(banner, "_update_check_done", threading.Event()), \
              patch.object(banner, "_deferred_update_notice_started", False):
@@ -157,7 +148,7 @@ class TestBannerUpdateCheckNonBlocking:
         """The late notice lands after patch_stdout owns stdout, where raw ESC bytes are
         sanitized into visible ``?[1;33m`` text (#83969). It must reach prompt_toolkit as a
         parsed ANSI fragment — never as a bare ``Console.print`` to stdout."""
-        import hermes_cli.banner as banner
+        from hermes_cli import banner
         from prompt_toolkit.formatted_text import ANSI, to_formatted_text
 
         printed = []
@@ -177,4 +168,3 @@ class TestBannerUpdateCheckNonBlocking:
         visible = "".join(text for _style, text, *_ in to_formatted_text(printed[0]))
         assert "3 commits behind" in visible
         assert "\x1b" not in visible and "[bold" not in visible
-

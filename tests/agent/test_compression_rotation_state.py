@@ -26,12 +26,14 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agent.context_compressor import ContextCompressor, _DB_PERSISTED_MARKER
+from agent.context_compressor import SUMMARY_PREFIX, ContextCompressor, _DB_PERSISTED_MARKER
 from agent.conversation_compression import (
     CompressionCommitFence,
     _is_real_user_message,
 )
+from agent.message_metadata import DB_ROW_SNAPSHOT
 from hermes_state import SessionDB
+import itertools
 
 
 def _build_agent_with_db(db: SessionDB, session_id: str, platform: str = "telegram"):
@@ -68,6 +70,32 @@ def _build_agent_with_db(db: SessionDB, session_id: str, platform: str = "telegr
     # rotation regardless of the global default (flipped to True in #38763).
     agent.compression_in_place = False
     return agent
+
+
+def _seed_bulk_head(db: SessionDB, parent: str) -> None:
+    """Durable parent transcript: 10 bulk turns + the persisted question/answer pair.
+
+    Bulk head so the stub fold genuinely shrinks: the no-growth commit guard
+    refuses a 3-row candidate that is not smaller than a 3-row original; the
+    transcript's last reply stays "persisted answer" (#118900 guard shape).
+    """
+    for i in range(10):
+        db.append_message(parent, "user", f"bulk question {i} " + "x" * 60)
+        db.append_message(parent, "assistant", f"bulk answer {i} " + "y" * 60)
+    db.append_message(parent, "user", "persisted question")
+    db.append_message(parent, "assistant", "persisted answer")
+
+
+def _conforming_fold(*tail: dict) -> list:
+    """Conforming-engine shape (#118900): a real handoff summary (recognized as
+    scaffolding, not human intent) plus the transcript's own last reply kept
+    verbatim ahead of the scaffolding tail, so the commit guard sees the reply
+    present and the user-turn anchor still takes the MERGED branch these tests exercise."""
+    return [
+        {"role": "user", "content": SUMMARY_PREFIX + " earlier turns"},
+        {"role": "assistant", "content": "persisted answer"},
+        *tail,
+    ]
 
 
 def _msgs(n=20):
@@ -118,7 +146,7 @@ class TestGoalMigratesOnRotation:
         # Set a persistent goal on the parent via the real persistence path.
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path / ".hermes")}):
             (tmp_path / ".hermes").mkdir(exist_ok=True)
-            import hermes_cli.goals as goals
+            from hermes_cli import goals
             goals._DB_CACHE.clear()
             # Point the goal DB at the same state.db the agent uses.
             with patch.object(goals, "_get_session_db", return_value=db):
@@ -275,7 +303,7 @@ class TestRotationChildFlushDedup:
             "_flush_messages_to_session_db",
             side_effect=RuntimeError("simulated parent flush failure"),
         ):
-            returned, _ = agent._compress_context(
+            _returned, _ = agent._compress_context(
                 messages, "sys", approx_tokens=120_000
             )
 
@@ -317,7 +345,7 @@ class TestRotationChildFlushDedup:
             "publish_compression_child",
             side_effect=RuntimeError("simulated publish failure"),
         ):
-            returned, _ = agent._compress_context(
+            _returned, _ = agent._compress_context(
                 messages, "sys", approx_tokens=120_000
             )
 
@@ -378,7 +406,7 @@ class TestRotationChildFlushDedup:
             "_flush_messages_to_session_db",
             side_effect=RuntimeError("simulated parent flush failure"),
         ):
-            returned, _ = agent._compress_context(
+            _returned, _ = agent._compress_context(
                 messages, "sys", approx_tokens=120_000
             )
 
@@ -481,7 +509,7 @@ class TestRotationChildFlushDedup:
             {"role": "assistant", "content": "[CONTEXT COMPACTION] summary"},
         ]
 
-        returned, _ = agent._compress_context(messages, "sys", approx_tokens=120_000)
+        _returned, _ = agent._compress_context(messages, "sys", approx_tokens=120_000)
         agent._flush_messages_to_session_db(messages, conversation_history=loaded)
 
         child_rows = db.get_messages_as_conversation(
@@ -509,8 +537,7 @@ class TestRotationChildFlushDedup:
         db = SessionDB(db_path=tmp_path / "state.db")
         parent = "PARENT_ROT_DRIFTED_MERGED"
         db.create_session(parent, source="cli")
-        db.append_message(parent, "user", "persisted question")
-        db.append_message(parent, "assistant", "persisted answer")
+        _seed_bulk_head(db, parent)
 
         loaded = db.get_messages_as_conversation(parent)
         messages = [
@@ -525,13 +552,13 @@ class TestRotationChildFlushDedup:
 
         agent = _build_agent_with_db(db, parent)
         agent._persist_user_message_idx = len(messages) - 1
-        agent.context_compressor.compress.return_value = [
+        agent.context_compressor.compress.return_value = _conforming_fold(
             {
                 "role": "user",
                 "content": "handoff scaffolding",
                 "_todo_snapshot_synthetic": True,
             },
-        ]
+        )
 
         real_flush = agent._flush_messages_to_session_db
         with patch.object(
@@ -566,21 +593,20 @@ class TestRotationChildFlushDedup:
         db = SessionDB(db_path=tmp_path / "state.db")
         parent = "PARENT_ROT_MERGED_LIVE"
         db.create_session(parent, source="cli")
-        db.append_message(parent, "user", "persisted question")
-        db.append_message(parent, "assistant", "persisted answer")
+        _seed_bulk_head(db, parent)
 
         loaded = db.get_messages_as_conversation(parent)
         messages = [*loaded, {"role": "user", "content": "live question"}]
 
         agent = _build_agent_with_db(db, parent)
         agent._persist_user_message_idx = len(messages) - 1
-        agent.context_compressor.compress.return_value = [
+        agent.context_compressor.compress.return_value = _conforming_fold(
             {
                 "role": "user",
                 "content": "scaffolding",
                 "_todo_snapshot_synthetic": True,
             },
-        ]
+        )
 
         real_flush = agent._flush_messages_to_session_db
         with patch.object(
@@ -621,8 +647,7 @@ class TestRotationChildFlushDedup:
         db = SessionDB(db_path=tmp_path / "state.db")
         parent = "PARENT_ROT_ADOPT_DIVERGE"
         db.create_session(parent, source="cli")
-        db.append_message(parent, "user", "persisted question")
-        db.append_message(parent, "assistant", "persisted answer")
+        _seed_bulk_head(db, parent)
 
         # (b) Old live list object kept alive; divergence set so the twin is
         # the SAME object the guard scans (not a fresh copy).
@@ -650,18 +675,18 @@ class TestRotationChildFlushDedup:
         # condition (durable parent longer than the caller snapshot) fires.
         db.append_message(parent, "user", "live question")
         durable_check = db.get_messages_as_conversation(parent)
-        assert len(durable_check) == 3 > len(stale_snapshot) == 2
+        assert len(durable_check) == len(loaded) + 1 > len(stale_snapshot) == 2
         # Sync the twin's timestamp to the committed row so the guard's
         # exact-timestamp twin scan matches the adopted anchor.
         old_live_list[-1]["timestamp"] = durable_check[-1]["timestamp"]
 
-        agent.context_compressor.compress.return_value = [
+        agent.context_compressor.compress.return_value = _conforming_fold(
             {
                 "role": "user",
                 "content": "handoff scaffolding",
                 "_todo_snapshot_synthetic": True,
             },
-        ]
+        )
 
         # The pre-publish flush fails, so the post-rotation flush below is the
         # only writer of the live view.
@@ -823,8 +848,7 @@ class TestRotationChildFlushDedup:
         db = SessionDB(db_path=tmp_path / "state.db")
         parent = "PARENT_ROT_LIST_MERGED"
         db.create_session(parent, source="cli")
-        db.append_message(parent, "user", "persisted question")
-        db.append_message(parent, "assistant", "persisted answer")
+        _seed_bulk_head(db, parent)
 
         loaded = db.get_messages_as_conversation(parent)
         messages = [
@@ -837,13 +861,13 @@ class TestRotationChildFlushDedup:
 
         agent = _build_agent_with_db(db, parent)
         agent._persist_user_message_idx = len(messages) - 1
-        agent.context_compressor.compress.return_value = [
+        agent.context_compressor.compress.return_value = _conforming_fold(
             {
                 "role": "user",
                 "content": [{"type": "text", "text": "scaffolding"}],
                 "_todo_snapshot_synthetic": True,
             },
-        ]
+        )
 
         real_flush = agent._flush_messages_to_session_db
         with patch.object(
@@ -896,8 +920,7 @@ class TestRotationChildFlushDedup:
         db = SessionDB(db_path=tmp_path / "state.db")
         parent = "PARENT_ROT_STAMPED_TWIN"
         db.create_session(parent, source="cli")
-        db.append_message(parent, "user", "persisted question")
-        db.append_message(parent, "assistant", "persisted answer")
+        _seed_bulk_head(db, parent)
 
         loaded = db.get_messages_as_conversation(parent)
         messages = [
@@ -921,13 +944,13 @@ class TestRotationChildFlushDedup:
             },
             {"role": "user", "content": "live question"},
         ]
-        agent.context_compressor.compress.return_value = [
+        agent.context_compressor.compress.return_value = _conforming_fold(
             {
                 "role": "user",
                 "content": "handoff scaffolding",
                 "_todo_snapshot_synthetic": True,
             },
-        ]
+        )
 
         with patch.object(
             agent,
@@ -1051,9 +1074,9 @@ class TestFallbackStreakFollowsRotation:
             side_effect=_fallback_compress,
         ):
             compressor.compression_count = 1
-            setattr(agent, "context_compressor", compressor)
+            agent.context_compressor = compressor
             agent._compress_context(_msgs(), "sys", approx_tokens=120_000)
-        child = getattr(agent, "session_id")
+        child = agent.session_id
 
         assert child != parent
         assert compressor._fallback_compression_streak == 1
@@ -1155,16 +1178,9 @@ class TestAutomaticCompressionStateRefreshAfterLock:
 
 
 class TestGateLevelGuardRefresh:
-    """The unblock direction must work from the should_compress() pre-gates.
+    """The pre-gate uses the measured ineffective count, not summary type."""
 
-    compress_context refreshes durable guards internally, but the automatic
-    paths (preflight/turn gates) consult should_compress() first — if a stale
-    in-memory fallback streak (which has no expiry timer) blocks there, the
-    refresh inside compress_context is never reached and the agent stays
-    blocked forever.
-    """
-
-    def test_should_compress_unblocks_after_another_agent_clears_streak(
+    def test_durable_fallback_streak_does_not_block_should_compress(
         self,
         refresh_state_db: SessionDB,
     ):
@@ -1175,11 +1191,8 @@ class TestGateLevelGuardRefresh:
         compressor = _bound_context_compressor(db, session_id)
         assert compressor._fallback_compression_streak == 2
 
-        # Another agent's healthy boundary clears the durable breaker.
-        db.set_compression_fallback_streak(session_id, 0)
-
+        # A previous run's fallback streak is diagnostic, so it never blocks.
         assert compressor.should_compress(10**9) is True
-        assert compressor._fallback_compression_streak == 0
 
 
 
@@ -1277,7 +1290,7 @@ class TestTodoSnapshotMergedNotDuplicated:
         assert "task A" in tail["content"]
         assert not any(
             previous.get("role") == current.get("role") == "user"
-            for previous, current in zip(compressed, compressed[1:])
+            for previous, current in itertools.pairwise(compressed)
         )
 
 
@@ -1297,11 +1310,21 @@ class TestTodoSnapshotMergedNotDuplicated:
                 "image_url": {"url": "https://example.com/context.png"},
             },
         ]
-        agent.context_compressor.compress.return_value = [
-            {"role": "user", "content": "[CONTEXT COMPACTION] summary"},
-            {"role": "assistant", "content": "ok"},
-            {"role": "user", "content": list(original_parts)},
-        ]
+        agent.context_compressor.compress.return_value = None
+
+        def _keep_last_reply(messages, **_kwargs):
+            # Conforming-engine shape (#118900): the retained tail assistant
+            # row is the transcript's own last reply, kept verbatim — the
+            # commit guard reinserts a dropped last reply, so a stub that
+            # invents a new tail row would (correctly) come back with the
+            # original alongside it.
+            return [
+                {"role": "user", "content": "[CONTEXT COMPACTION] summary"},
+                {"role": "assistant", "content": messages[-1]["content"]},
+                {"role": "user", "content": list(original_parts)},
+            ]
+
+        agent.context_compressor.compress.side_effect = _keep_last_reply
         agent._todo_store._todos = [
             {"id": "t1", "content": "inspect image", "status": "in_progress"}
         ]
@@ -1334,7 +1357,7 @@ class TestTodoSnapshotMergedNotDuplicated:
         )
         assert not any(
             previous.get("role") == current.get("role") == "user"
-            for previous, current in zip(compressed, compressed[1:])
+            for previous, current in itertools.pairwise(compressed)
         )
 
         db_msgs = db.get_messages(agent.session_id)
@@ -1347,7 +1370,7 @@ class TestTodoSnapshotMergedNotDuplicated:
         )
         assert not any(
             previous.get("role") == current.get("role") == "user"
-            for previous, current in zip(db_msgs, db_msgs[1:])
+            for previous, current in itertools.pairwise(db_msgs)
         )
 
 
@@ -1404,7 +1427,7 @@ class TestTodoSnapshotScaffoldingTails:
         assert "api_content" not in tail
         assert not any(
             previous.get("role") == current.get("role") == "user"
-            for previous, current in zip(compressed, compressed[1:])
+            for previous, current in itertools.pairwise(compressed)
         )
 
     def test_empty_todo_store_injects_nothing(self, tmp_path: Path):
@@ -1434,10 +1457,12 @@ class TestTodoSnapshotScaffoldingTails:
             {
                 k: v
                 for k, v in m.items()
-                if k not in {"_row_id", "timestamp", _DB_PERSISTED_MARKER}
+                if k not in {"_row_id", "timestamp", "message_uid", _DB_PERSISTED_MARKER, DB_ROW_SNAPSHOT}
             }
             for m in compressed
         ] == expected
+        # The rotation handoff stamps each child row's stored digest, so a re-flush takes the versioned path.
+        assert all(isinstance(m.get(DB_ROW_SNAPSHOT), str) for m in compressed)
         assert not any(
             TODO_INJECTION_HEADER in str(message.get("content") or "")
             for message in compressed
@@ -1597,7 +1622,7 @@ class TestTodoSnapshotScaffoldingTails:
         assert "api_content" not in repaired
         assert not any(
             previous.get("role") == current.get("role")
-            for previous, current in zip(compressed, compressed[1:])
+            for previous, current in itertools.pairwise(compressed)
         )
 
     def test_multimodal_content_survives_and_synthetic_provenance_clears(
@@ -1707,7 +1732,7 @@ class TestTodoSnapshotScaffoldingTails:
         db.create_session(session_id, source="telegram")
         agent = _build_agent_with_db(db, session_id, platform="telegram")
         pending_task = "- [ ] pending-task. Continue after the next compaction"
-        getattr(agent, "context_compressor").compress.return_value = [
+        agent.context_compressor.compress.return_value = [
             {"role": "user", "content": "[CONTEXT COMPACTION] summary"},
             {"role": "assistant", "content": "acknowledged"},
             {
@@ -1802,7 +1827,7 @@ class TestAbortedRotationDoesNotGrowParent:
         db.end_session(parent, "tui_shutdown")
         assert db.get_session(parent)["ended_at"] is not None
 
-        returned, _sp = agent._compress_context(_msgs(), "sys", approx_tokens=120_000)
+        _returned, _sp = agent._compress_context(_msgs(), "sys", approx_tokens=120_000)
 
         # Rotation went through — no abort loop, no repeated flush growth.
         assert agent.session_id != parent
