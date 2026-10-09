@@ -18,6 +18,10 @@ from agent.title_generator import (
 )
 from hermes_state import SessionDB
 
+# Module scope on purpose: importing tui_gateway.server inside a test trips the home-I/O
+# guard — its import chain probes the install manifest beside the hermes home.
+from tui_gateway.server import _MODEL_SWITCH_MARKER_PREFIX
+
 
 class TestGenerateTitle:
     """Unit tests for generate_title()."""
@@ -847,7 +851,6 @@ class TestModelSwitchMarkerNotTitleable:
 
     def test_marker_prefix_matches_gateway_constant(self):
         """The guard must stay in sync with the gateway's marker builder."""
-        from tui_gateway.server import _MODEL_SWITCH_MARKER_PREFIX
         from agent.title_generator import _MACHINE_PREFIXES
 
         assert _MODEL_SWITCH_MARKER_PREFIX in _MACHINE_PREFIXES

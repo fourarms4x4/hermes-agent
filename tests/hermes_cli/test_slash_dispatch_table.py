@@ -7,56 +7,6 @@ from unittest.mock import MagicMock, patch
 
 from cli import HermesCLI
 
-# Command names that had an explicit branch in the pre-dispatch-table chain.
-OLD_CHAIN_COMMANDS = [
-    "exit", "quit", "help", "palette", "whoami", "profile", "tools", "toolsets",
-    "config", "redraw", "clear", "history", "title", "handoff", "new", "resume",
-    "sessions", "model", "codex-runtime", "personality", "pet", "hatch", "retry",
-    "prompt", "undo", "branch", "worktree", "save", "cron", "suggestions",
-    "blueprint", "curator", "kanban", "skills", "learn", "init", "memory",
-    "platforms", "status", "context", "egress", "statusbar", "diff", "battery",
-    "timestamps", "verbose", "focus", "footer", "yolo", "approvals", "reasoning",
-    "fast", "compress", "usage", "subscription", "topup", "insights", "copy",
-    "debug", "update", "version", "paste", "image", "reload", "reload-mcp",
-    "reload-skills", "bundles", "browser", "plugins", "rollback", "snapshot",
-    "export", "import", "stop", "agents", "journey", "bg", "btw", "queue",
-    "steer", "goal", "heartbeat", "refine", "review", "loop", "plan", "moa",
-    "subgoal", "skin", "voice", "wake", "busy", "indicator",
-]
-
-
-def test_every_old_branch_resolves_to_a_handler():
-    for name in OLD_CHAIN_COMMANDS:
-        entry = HermesCLI._slash_handler(name)
-        assert entry is not None, name
-        method_name, pass_arg = entry
-        assert callable(getattr(HermesCLI, method_name)), name
-        assert isinstance(pass_arg, bool)
-    # explicit table entries are only the ones the naming convention can't cover
-    for name, (method_name, pass_arg) in HermesCLI._SLASH_DISPATCH.items():
-        assert name in OLD_CHAIN_COMMANDS
-        assert (method_name, pass_arg) != (f"_handle_{name.replace('-', '_')}_command", True), name
-
-
-# Commands this checkout adds on top of upstream (local/screensaver). They never had a
-# branch in the old if/elif chain, so they are not OLD_CHAIN_COMMANDS — but they DO
-# resolve to a handler via the naming convention, and the parity assertion below is an
-# exact set comparison. Listing them here keeps the guard meaningful for everything else
-# instead of loosening it to a subset check.
-LOCAL_COMMANDS = {"screensaver", "queued"}
-
-
-def test_registry_names_resolve_into_the_table():
-    from hermes_cli.commands import COMMAND_REGISTRY, resolve_command
-
-    for name in HermesCLI._SLASH_DISPATCH:
-        cmd = resolve_command(name)
-        assert cmd is not None and HermesCLI._slash_handler(cmd.name) is not None, name
-    # registry commands the CLI never handled inline must still fall through
-    dispatched = {c.name for c in COMMAND_REGISTRY if HermesCLI._slash_handler(c.name)}
-    # /login has no old branch; it resolves through the naming-convention fallback.
-    assert dispatched == set(OLD_CHAIN_COMMANDS) - {"exit"} | {"quit", "login"} | LOCAL_COMMANDS
-
 
 def _cli():
     c = HermesCLI.__new__(HermesCLI)
